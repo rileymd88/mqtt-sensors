@@ -87,6 +87,33 @@ const App: React.FC = () => {
     }
   };
 
+  const saveDataToStorage = async (key: string, data: any) => {
+    try {
+      const sensors = await AsyncStorage.getItem('sensors');
+      if (sensors) {
+        const parsed = JSON.parse(sensors);
+        parsed[key] = data;
+        await AsyncStorage.setItem('sensors', JSON.stringify(parsed));
+      } else {
+        await AsyncStorage.setItem('sensors', JSON.stringify({ [key]: data}));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  const getDataFromStorage = async (): Promise<any | null> => {
+    try {
+      const sensors = await AsyncStorage.getItem('sensors');
+      if (sensors) {
+        return JSON.parse(sensors);
+      }
+    } catch (e) {
+      return null;
+      console.error(e);
+    }
+  }
+
   const addListeners = () => {
     Accelerometer.setUpdateInterval(1000);
     Gyroscope.setUpdateInterval(1000);
@@ -94,11 +121,11 @@ const App: React.FC = () => {
     DeviceMotion.setUpdateInterval(1000);
     Barometer.setUpdateInterval(1000);
 
-    Accelerometer.addListener(data => setAccelerometerData(data));
-    Gyroscope.addListener(data => setGyroscopeData(data));
-    Magnetometer.addListener(data => setMagnetometerData(data));
-    DeviceMotion.addListener(data => setDeviceMotionData(data));
-    Barometer.addListener(data => setBarometerData(data));
+    Accelerometer.addListener(data => saveDataToStorage('accelerometer', data));
+    Gyroscope.addListener(data => saveDataToStorage('gyroscope', data));
+    Magnetometer.addListener(data =>  saveDataToStorage('magnetometer', data));
+    DeviceMotion.addListener(data => saveDataToStorage('deviceMotion', data));
+    Barometer.addListener(data =>   saveDataToStorage('barometer', data));
   };
 
   const removeListeners = () => {
@@ -124,17 +151,10 @@ const App: React.FC = () => {
     });
   };
 
-  const publishMessage = () => {
-    const message = new Message(JSON.stringify({
-      accelerometer: accelerometerData,
-      gyroscope: gyroscopeData,
-      magnetometer: magnetometerData,
-      barometer: barometerData,
-      deviceMotion: deviceMotionData,
-      pedometer: pedometerData,
-      batteryLevel: batteryLevel,
-      location: location,
-    }));
+  const publishMessage = async () => {
+    const data = await getDataFromStorage();
+    if (!data) return;
+    const message = new Message(JSON.stringify(data));
     console.log("message", message);
     message.destinationName = "sensors";
     client.send(message);
@@ -163,8 +183,8 @@ const App: React.FC = () => {
   const fetchSensorData = async () => {
     const batteryLevel = await Battery.getBatteryLevelAsync();
     const location = await Location.getCurrentPositionAsync({});
-    setBatteryLevel(batteryLevel);
-    setLocation(location);
+    saveDataToStorage('batteryLevel', batteryLevel);
+    saveDataToStorage('location', location);
   };
 
   useEffect(() => {

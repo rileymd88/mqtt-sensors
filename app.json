@@ -21,10 +21,21 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.riley.macdonald.mqttsensors"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3943057c-0868-41bf-8bfd-8ea6f7477cf3"
+      }
+    }
+  },
+  "extra": {
+    "eas": {
+      "projectId": "3943057c-0868-41bf-8bfd-8ea6f7477cf3"
     }
   }
 }
