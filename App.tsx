@@ -10,7 +10,7 @@ import {
 } from 'expo-sensors';
 import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
-import mqtt, { MqttClient } from 'mqtt';
+import { Client, Message } from 'paho-mqtt';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface SensorData {
@@ -26,12 +26,26 @@ interface SensorData {
 
 const App: React.FC = () => {
   const [mqttServer, setMqttServer] = useState<string>('');
-  const [mqttPort, setMqttPort] = useState<string>('1883');
-  const [publishInterval, setPublishInterval] = useState<string>('1');
+  const [mqttPort, setMqttPort] = useState<string>('9001');
+  const [publishInterval, setPublishInterval] = useState<string>('2');
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [sensorData, setSensorData] = useState<SensorData>({});
-  let client: MqttClient;
-  let locationSubscription: Location.LocationSubscription;
+  const [accelerometerData, setAccelerometerData] = useState<any>({});
+  const [gyroscopeData, setGyroscopeData] = useState<any>({});
+  const [magnetometerData, setMagnetometerData] = useState<any>({});
+  const [barometerData, setBarometerData] = useState<any>({});
+  const [deviceMotionData, setDeviceMotionData] = useState<any>({});
+  const [pedometerData, setPedometerData] = useState<any>({});
+  const [batteryLevel, setBatteryLevel] = useState<number>(0);
+  const [location, setLocation] = useState<Location.LocationObject | null>(null);
+
+
+  let client: Client;
+  let pedometer: Pedometer.Subscription;
+
+  const requestPermissions = async () => {
+    await Location.requestForegroundPermissionsAsync();
+    await Pedometer.requestPermissionsAsync();
+  };
 
   const saveData = async () => {
     try {
@@ -56,20 +70,137 @@ const App: React.FC = () => {
     }
   };
 
+  const subscribeToPedometer = async () => {
+    const isAvailable = await Pedometer.isAvailableAsync();
+    if (isAvailable) {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(end.getDate() - 1);
+
+      const pastStepCountResult = await Pedometer.getStepCountAsync(start, end);
+      if (pastStepCountResult) {
+        setPedometerData(pastStepCountResult.steps);
+      }
+      return Pedometer.watchStepCount(result => {
+        setPedometerData(result.steps);
+      });
+    }
+  };
+
+  const addListeners = () => {
+    Accelerometer.setUpdateInterval(1000);
+    Gyroscope.setUpdateInterval(1000);
+    Magnetometer.setUpdateInterval(1000);
+    DeviceMotion.setUpdateInterval(1000);
+    Barometer.setUpdateInterval(1000);
+
+    Accelerometer.addListener(data => setAccelerometerData(data));
+    Gyroscope.addListener(data => setGyroscopeData(data));
+    Magnetometer.addListener(data => setMagnetometerData(data));
+    DeviceMotion.addListener(data => setDeviceMotionData(data));
+    Barometer.addListener(data => setBarometerData(data));
+  };
+
+  const removeListeners = () => {
+    Accelerometer.removeAllListeners();
+    Gyroscope.removeAllListeners();
+    Magnetometer.removeAllListeners();
+    DeviceMotion.removeAllListeners();
+    Barometer.removeAllListeners();
+  };
+
+  const connectClient = (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      client.connect({
+        onSuccess: () => {
+          console.log('MQTT Connected');
+          resolve();
+        },
+        onFailure: (error) => {
+          console.log('MQTT Connection Failed:', error.errorMessage);
+          reject(error.errorMessage);
+        },
+      });
+    });
+  };
+
+  const publishMessage = () => {
+    const message = new Message(JSON.stringify({
+      accelerometer: accelerometerData,
+      gyroscope: gyroscopeData,
+      magnetometer: magnetometerData,
+      barometer: barometerData,
+      deviceMotion: deviceMotionData,
+      pedometer: pedometerData,
+      batteryLevel: batteryLevel,
+      location: location,
+    }));
+    console.log("message", message);
+    message.destinationName = "sensors";
+    client.send(message);
+  };
+
+  const setupMQTT = async () => {
+    client = new Client(mqttServer, Number(mqttPort), '/', 'mqtt-sensors');
+
+    client.onConnectionLost = (responseObject: { errorCode: number; errorMessage: string }) => {
+      console.log('MQTT Connection Lost:', responseObject.errorMessage);
+    };
+
+    client.onMessageArrived = (message: Message) => {
+      console.log('MQTT Message Arrived:', message.payloadString);
+    };
+
+    try {
+      await connectClient();
+      
+      console.log('message sent!')
+    } catch (error) {
+      console.error('MQTT Setup Error:', error);
+    }
+  };
+
+  const fetchSensorData = async () => {
+    const batteryLevel = await Battery.getBatteryLevelAsync();
+    const location = await Location.getCurrentPositionAsync({});
+    setBatteryLevel(batteryLevel);
+    setLocation(location);
+  };
+
   useEffect(() => {
     readData();
     requestPermissions();
   }, []);
 
   useEffect(() => {
+    async function setup() {
+      addListeners();
+      const p = await subscribeToPedometer();
+        if (p) pedometer = p;
+    }
+    setup();
+    return () => {
+      removeListeners();
+      pedometer?.remove();
+    };
+  }, []);
+
+
+  useEffect(() => {
     saveData();
   }, [mqttServer, mqttPort, publishInterval]);
 
   useEffect(() => {
-    if (isConnected) {
-      setupMQTT();
-    } else {
-      client?.end();
+    async function setup() {
+      if (isConnected) {
+        await setupMQTT();
+      } else {
+        client?.disconnect();
+      }
+    }
+    setup();
+    return () => {
+      client?.disconnect();
     }
   }, [isConnected, mqttServer, mqttPort, publishInterval]);
 
@@ -77,77 +208,15 @@ const App: React.FC = () => {
     saveData();
   }, [mqttServer, mqttPort, publishInterval]);
 
-  const requestPermissions = async () => {
-    await Location.requestForegroundPermissionsAsync();
-    await Pedometer.requestPermissionsAsync();
-  };
-
-  const setupMQTT = () => {
-    client = mqtt.connect(`mqtt://${mqttServer}:${mqttPort}`);
-
-    const updateInterval = parseInt(publishInterval) * 1000;
-
-    Accelerometer.setUpdateInterval(updateInterval);
-    Gyroscope.setUpdateInterval(updateInterval);
-    Magnetometer.setUpdateInterval(updateInterval);
-    DeviceMotion.setUpdateInterval(updateInterval);
-    Barometer.setUpdateInterval(updateInterval);
-
-    Accelerometer.addListener(data => {
-      setSensorData(prevData => ({ ...prevData, accelerometer: data }));
-    });
-
-    Gyroscope.addListener(data => {
-      setSensorData(prevData => ({ ...prevData, gyroscope: data }));
-    });
-
-    Magnetometer.addListener(data => {
-      setSensorData(prevData => ({ ...prevData, magnetometer: data }));
-    });
-
-    Barometer.addListener(data => {
-      setSensorData(prevData => ({ ...prevData, barometer: data }));
-    });
-
-    DeviceMotion.addListener(data => {
-      setSensorData(prevData => ({ ...prevData, deviceMotion: data }));
-    });
-
-    Pedometer.watchStepCount(result => {
-      setSensorData(prevData => ({ ...prevData, pedometer: result.steps }));
-    });
-
-    const batterySubscription = Battery.addBatteryLevelListener(({ batteryLevel }) => {
-      setSensorData(prevData => ({ ...prevData, batteryLevel }));
-    });
-
-    Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: updateInterval,
-      },
-      location => {
-        setSensorData(prevData => ({ ...prevData, location }));
-      }
-    );
-
+  useEffect(() => {
     const interval = setInterval(() => {
-      if (client.connected) {
-        client.publish('sensor/data', JSON.stringify(sensorData));
+      fetchSensorData();
+      if (isConnected) {
+        publishMessage();
       }
-    }, updateInterval);
-
-    return () => {
-      clearInterval(interval);
-      Accelerometer.removeAllListeners();
-      Gyroscope.removeAllListeners();
-      Magnetometer.removeAllListeners();
-      DeviceMotion.removeAllListeners();
-      Barometer.removeAllListeners();
-      batterySubscription?.remove();
-      locationSubscription?.remove();
-    };
-  };
+    }, parseInt(publishInterval) * 1000);
+    return () => clearInterval(interval);
+  }, [publishInterval, isConnected]);
 
   return (
     <View style={styles.container}>
@@ -159,7 +228,7 @@ const App: React.FC = () => {
       />
       <TextInput
         style={styles.input}
-        placeholder="MQTT Port (default 1883)"
+        placeholder="MQTT Port"
         value={mqttPort}
         onChangeText={setMqttPort}
         keyboardType="numeric"
